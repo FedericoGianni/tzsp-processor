@@ -30,7 +30,7 @@ format:
 
 lint:
   stage: lint
-  image: golangci/golangci-lint:v2.14.0
+  image: golangci/golangci-lint:v2.15.0
   script:
     - golangci-lint run ./...
 
