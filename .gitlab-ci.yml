@@ -1,0 +1,165 @@
+variables:
+  GOPATH: $CI_PROJECT_DIR/.go
+  GOCACHE: $CI_PROJECT_DIR/.cache/go-build
+
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - .go/pkg/mod
+    - .cache/go-build
+
+stages:
+  - format
+  - lint
+  - vet
+  - test
+  - security
+  - build
+  - publish
+  - release
+
+format:
+  stage: format
+  image: golang:1.27
+  script:
+    - |
+      unformatted=$(gofmt -s -l $(git ls-files '*.go')) || exit 1
+      test -z "$unformatted" || { echo "The following files are not gofmt formatted:"; echo "$unformatted"; exit 1; }
+    - go mod tidy
+    - git diff --exit-code go.mod go.sum
+
+lint:
+  stage: lint
+  image: golangci/golangci-lint:v2.14.0
+  script:
+    - golangci-lint run ./...
+
+vet:
+  stage: vet
+  image: golang:1.27
+  script:
+    - go vet ./...
+
+unit-test:
+  stage: test
+  image: golang:1.27
+  script:
+    - go test -v -race -cover ./...
+
+sonarqube:
+  tags:
+    - k8s
+  stage: security
+  image:
+    name: sonarsource/sonar-scanner-cli:latest
+    entrypoint: [""]
+  variables:
+    SONAR_PROJECT_KEY: tzsp
+    SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"
+    GIT_DEPTH: "0"
+  cache:
+    key: "${CI_JOB_NAME}"
+    paths:
+      - .sonar/cache
+  script:
+    - sonar-scanner -Dsonar.projectKey=$SONAR_PROJECT_KEY -Dsonar.sources=. -Dsonar.projectName=tzsp
+  allow_failure: true
+  rules:
+    # Runs on this project's in-cluster runner only; skipped on forks.
+    - if: $CI_PROJECT_PATH != "forbay/tzsp-processor"
+      when: never
+    - if: $CI_PROJECT_PATH == "forbay/tzsp-processor"
+
+# Public release binaries, built on any runner.
+binaries:
+  stage: build
+  image: golang:1.27
+  variables:
+    # Full history so `git describe --tags` resolves the release tag.
+    GIT_DEPTH: "0"
+  script:
+    - make dist
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 week
+
+# Container image push to the internal in-cluster registry. Uses HTTP and
+# skips registry TLS verification, which is acceptable because both the
+# runner and the registry live on the private network.
+build:
+  extends: .kaniko_build_and_push_template
+  tags:
+    - k8s
+  variables:
+    SERVICE_IMAGE_TAG: "${HARBOR_HOST}/${HARBOR_PROJECT}/tzsp-processor"
+    SERVICE_LATEST_TAG: "${HARBOR_HOST}/${HARBOR_PROJECT}/tzsp-processor:latest"
+  script:
+    - |
+      IMAGE_TAG="${CI_COMMIT_TAG:-${CI_COMMIT_SHORT_SHA}}"
+      echo "Building and pushing tzsp-processor image..."
+      mkdir -p /kaniko/.docker
+      echo "{\"auths\":{\"${HARBOR_HOST}\":{\"username\":\"${HARBOR_USERNAME}\",\"password\":\"${HARBOR_PASSWORD}\"}}}" > /kaniko/.docker/config.json
+      chmod 600 /kaniko/.docker/config.json
+      /kaniko/executor \
+        --context "${CI_PROJECT_DIR}/" \
+        --dockerfile "${CI_PROJECT_DIR}/build/Dockerfile" \
+        --destination="${SERVICE_IMAGE_TAG}:${IMAGE_TAG}" \
+        --destination="${SERVICE_LATEST_TAG}" \
+        --build-arg "VERSION=${IMAGE_TAG}" \
+        --insecure \
+        --skip-tls-verify-registry="${HARBOR_HOST}" \
+        --cache=true \
+        --cache-repo="${HARBOR_HOST}/${HARBOR_PROJECT}/cache" \
+        --cache-ttl=72h
+  rules:
+    - if: $CI_PROJECT_PATH != "forbay/tzsp-processor"
+      when: never
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH == 'main'
+
+# Publish binaries to the generic package registry so deployment tooling
+# (e.g. Ansible) can fetch them anonymously. The release-cli image has no
+# curl, so this runs in a dedicated curl image.
+publish-packages:
+  stage: publish
+  image: curlimages/curl:latest
+  needs:
+    - job: binaries
+      artifacts: true
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    - set -euo pipefail
+    - |
+      for asset in dist/tzsp-processor-linux-amd64 dist/tzsp-processor-linux-arm64 dist/SHA256SUMS; do
+        name=$(basename "${asset}")
+        curl --fail --silent --show-error \
+          --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+          --upload-file "${asset}" \
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/tzsp-processor/${CI_COMMIT_TAG}/${name}"
+      done
+
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  needs:
+    - job: publish-packages
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    - |
+      release-cli create \
+        --name "tzsp-processor ${CI_COMMIT_TAG}" \
+        --tag-name "${CI_COMMIT_TAG}" \
+        --description "Release ${CI_COMMIT_TAG}" \
+        --assets-link "{\"name\":\"tzsp-processor-linux-amd64\",\"url\":\"${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/tzsp-processor/${CI_COMMIT_TAG}/tzsp-processor-linux-amd64\"}" \
+        --assets-link "{\"name\":\"tzsp-processor-linux-arm64\",\"url\":\"${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/tzsp-processor/${CI_COMMIT_TAG}/tzsp-processor-linux-arm64\"}" \
+        --assets-link "{\"name\":\"SHA256SUMS\",\"url\":\"${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/tzsp-processor/${CI_COMMIT_TAG}/SHA256SUMS\"}"
+
+# BUILD STAGE TEMPLATE
+.kaniko_build_and_push_template:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]

@@ -1,0 +1,25 @@
+# Binaries
+/tzsp-processor
+*.exe
+
+# Build output
+bin/
+dist/
+.go/
+.cache/
+.sonar/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+
+# Logs
+*.log

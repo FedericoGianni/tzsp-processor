@@ -1,0 +1,29 @@
+# GIT
+.git
+.gitignore
+.gitlab-ci.yml
+
+# BIN
+bin/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# CI caches
+.go/
+.cache/
+.sonar/
+
+# ENV
+.env
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# CI / DEV
+.golangci.yml
+Makefile
