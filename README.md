@@ -50,8 +50,7 @@ The service shuts down gracefully on `SIGINT`/`SIGTERM`, flushing the current pc
 ├── internal/decoder/     # TZSP decoding, pcap writing, rotation
 ├── build/Dockerfile      # Production image (multi-stage, distroless)
 ├── scripts/              # Cron helpers for pcap lifecycle
-├── Makefile              # fmt / lint / vet / test / build / dist targets
-└── .gitlab-ci.yml        # CI pipeline
+└── Makefile              # fmt / lint / vet / test / build / dist targets
 ```
 
 ## Development
@@ -64,21 +63,6 @@ make test       # go test -race -cover
 make build      # static binary with version stamp
 make dist       # linux/amd64 + linux/arm64 release binaries and SHA256SUMS
 ```
-
-## CI Pipeline
-
-The GitLab CI pipeline runs on every push:
-
-1. **format** — `gofmt` check + `go mod tidy` consistency
-2. **lint** — `golangci-lint`
-3. **vet** — `go vet`
-4. **test** — `go test -race -cover`
-5. **security** — SonarQube analysis (internal runners only)
-6. **build** — release binaries for linux/amd64 and linux/arm64; the container image is pushed to the internal registry only from `main` and tags
-7. **release** — on tags, uploads the binaries to the GitLab generic package registry and creates a release
-
-The SonarQube and container-registry jobs target the project's internal
-`k8s` runner and private registry. They are skipped on forks.
 
 ## Deployment
 
